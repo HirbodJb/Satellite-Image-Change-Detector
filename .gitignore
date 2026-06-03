@@ -220,6 +220,7 @@ __marimo__/
 # Local folders for
 data/
 models/
+__pycache__/
 *.pth
 *.pt
 *.ckpt
