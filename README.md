@@ -160,10 +160,3 @@ After  image (3ch) ──┘                                    │
 | Low IoU after training | Try `--lr 3e-4` and `--epochs 60`; also check mask values are 0/255 |
 
 ---
-
-## Resume / Portfolio Tips
-
-- **Live demo link** > GitHub repo. Deploy to HF Spaces.
-- Swap the demo images for a real-world event (Amazon deforestation, post-disaster imagery from Copernicus EMS).
-- Add a `folium` map showing the geo-coordinates of your test region.
-- Write a 400-word blog post explaining your architecture choices — post on Medium or your personal site.
