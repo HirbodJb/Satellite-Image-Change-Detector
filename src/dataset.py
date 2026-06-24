@@ -59,11 +59,12 @@ class LEVIRDataset(Dataset):
              os.path.join(primary_dir, "B", f),
              os.path.join(primary_dir, "label", f))
             for f in sorted(os.listdir(os.path.join(primary_dir, "A")))
+            if f.endswith('.png')
         ]
 
         # LEVIR-CD+ (only train and test splits exist)
         plus_split  = "train" if split == "train" else "test"
-        plus_dir    = os.path.join(root_dir, "..", "levir_plus", plus_split)
+        plus_dir    = os.path.join(root_dir, "levir_plus", "LEVIR-CD+", plus_split)
         filenames_plus = []
         if os.path.exists(plus_dir):
             filenames_plus = [
@@ -71,6 +72,7 @@ class LEVIRDataset(Dataset):
                  os.path.join(plus_dir, "B", f),
                  os.path.join(plus_dir, "label", f))
                 for f in sorted(os.listdir(os.path.join(plus_dir, "A")))
+                if f.endswith('.png')
             ]
 
         self.filenames = filenames_primary + filenames_plus
