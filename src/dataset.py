@@ -22,11 +22,6 @@ def get_train_transforms(img_size=256):
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
         A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, p=0.3),
-        A.GridDistortion(p=0.3),
-        A.ElasticTransform(p=0.2),
-        A.GaussNoise(p=0.3),
-        A.RandomBrightnessContrast(p=0.4),
-        A.CLAHE(p=0.3),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ], additional_targets={"image2": "image"})
