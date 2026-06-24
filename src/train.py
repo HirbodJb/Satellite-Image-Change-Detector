@@ -40,7 +40,7 @@ def get_args():
 #  Train / Val loop                                                            #
 # --------------------------------------------------------------------------- #
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
+def train_one_epoch(model, loader, criterion, optimizer, scheduler, device):
     model.train()
     total_loss = 0.0
     for img_a, img_b, mask in tqdm(loader, desc="  train", leave=False):
@@ -50,6 +50,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         loss   = criterion(logits, mask)
         loss.backward()
         optimizer.step()
+        scheduler.step()
         total_loss += loss.item()
     return total_loss / len(loader)
 
@@ -95,7 +96,14 @@ def main():
     model     = SiameseUNet(encoder_name=args.encoder).to(device)
     criterion = DiceBCELoss(bce_weight=0.5)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=3e-4,
+    epochs=args.epochs,
+    steps_per_epoch=len(train_loader),
+    pct_start=0.1,
+    anneal_strategy='cos'
+)
 
     # ---- Training loop -------------------------------------------------------
     best_iou = 0.0
@@ -104,9 +112,8 @@ def main():
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
 
-        train_loss              = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss              = train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device)
         val_loss, val_iou, val_f1 = validate(model, val_loader, criterion, device)
-        scheduler.step()
 
         history.append({
             "epoch": epoch, "train_loss": train_loss,

@@ -50,20 +50,12 @@ class ChangeDetector:
     @torch.no_grad()
     def predict(
         self,
-        before,          # str path OR PIL.Image
-        after,           # str path OR PIL.Image
+        before,
+        after,
         threshold: float = 0.5,
         img_size: int    = 256,
+        tta: bool        = True,
     ):
-        """
-        Returns
-        -------
-        result_dict : dict with keys
-            'heatmap'      : np.ndarray (H, W, 3)  — colour overlay on 'before'
-            'mask'         : np.ndarray (H, W)     — binary 0/1
-            'prob_map'     : np.ndarray (H, W)     — float 0–1
-            'change_pct'   : float                 — % pixels changed
-        """
         load = _pil_to_array if isinstance(before, Image.Image) else _load_and_resize
 
         img_a = load(before,  img_size) if isinstance(before, Image.Image) else _load_and_resize(before,  img_size)
@@ -73,19 +65,35 @@ class ChangeDetector:
         a_t = t["image"].unsqueeze(0).to(self.device)
         b_t = t["image2"].unsqueeze(0).to(self.device)
 
-        logits   = self.model(a_t, b_t)                        # (1,1,H,W)
-        prob_map = torch.sigmoid(logits).squeeze().cpu().numpy()  # (H,W)
-        mask     = (prob_map > threshold).astype(np.uint8)
+        if tta:
+            # Run 4 augmented versions and average predictions
+            preds = []
+            for flip_h, flip_v in [(False,False),(True,False),(False,True),(True,True)]:
+                a_aug = a_t.clone()
+                b_aug = b_t.clone()
+                if flip_h:
+                    a_aug = a_aug.flip(-1)
+                    b_aug = b_aug.flip(-1)
+                if flip_v:
+                    a_aug = a_aug.flip(-2)
+                    b_aug = b_aug.flip(-2)
+                logits = self.model(a_aug, b_aug)
+                prob   = torch.sigmoid(logits)
+                if flip_h:
+                    prob = prob.flip(-1)
+                if flip_v:
+                    prob = prob.flip(-2)
+                preds.append(prob)
+            prob_map = torch.stack(preds).mean(0).squeeze().cpu().numpy()
+        else:
+            logits   = self.model(a_t, b_t)
+            prob_map = torch.sigmoid(logits).squeeze().cpu().numpy()
 
-        # ---- Build colour overlay -------------------------------------------
-        # Use original before image as background
-        bg     = img_a.copy()
+        mask = (prob_map > threshold).astype(np.uint8)
+
+        bg      = img_a.copy()
         overlay = bg.copy()
-
-        # Changed pixels → bright red
         overlay[mask == 1] = [255, 60, 60]
-
-        # Blend
         alpha   = 0.45
         heatmap = cv2.addWeighted(bg, 1 - alpha, overlay, alpha, 0)
 
