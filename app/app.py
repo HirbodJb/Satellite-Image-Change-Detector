@@ -224,7 +224,7 @@ if run_btn:
             st.image(mask_display, use_container_width=True, clamp=True)
 
         with v3:
-            st.markdown("**Probability Map**")
+            st.markdown("**Change Probability Map**")
             fig, ax = plt.subplots(figsize=(4, 4))
             fig.patch.set_facecolor("#0a0e1a")
             ax.set_facecolor("#0a0e1a")
