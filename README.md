@@ -1,134 +1,36 @@
 # 🛰️ Satellite Change Detector
 
-A Siamese U-Net that detects surface changes between before/after satellite image pairs.
-Built for the **LEVIR-CD** dataset. Deployed as a Streamlit web app.
+> Deep learning model that detects and quantifies surface changes between before/after satellite image pairs — deployed as a live interactive web app.
+
+**[🚀 Live Demo](https://huggingface.co/spaces/HirbodJB/satellite-change-detector)** · **[📦 Model Weights](https://huggingface.co/spaces/HirbodJB/satellite-change-detector/tree/main)**
 
 ---
 
-## Project Structure
-
-```
-satellite-change-detector/
-├── data/
-│   └── raw/                    ← PUT LEVIR-CD DATASET HERE
-│       ├── train/
-│       │   ├── A/              ← before images (.png)
-│       │   ├── B/              ← after  images (.png)
-│       │   └── label/          ← binary masks  (.png)
-│       ├── val/
-│       │   ├── A/  B/  label/
-│       └── test/
-│           ├── A/  B/  label/
-├── models/                     ← checkpoints saved here after training
-├── src/
-│   ├── dataset.py              ← Dataset + augmentations
-│   ├── model.py                ← Siamese U-Net + DiceBCE loss
-│   ├── metrics.py              ← IoU, F1, Precision, Recall
-│   ├── train.py                ← Training loop
-│   └── inference.py            ← Predictor class used by the app
-├── app/
-│   └── app.py                  ← Streamlit UI
-├── notebooks/                  ← (optional) exploration notebooks
-└── requirements.txt
-```
+![Demo Results](assets/demo_result.png)
+*Left: Heatmap overlay highlighting detected changes in red. Center: Binary change mask. Right: Per-pixel change probability map.*
 
 ---
 
-## Step 1 — Install Dependencies
+## What It Does
 
-```bash
-# Create a virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+Upload two satellite images of the same location taken at different times. The model analyzes every pixel and produces:
 
-pip install -r requirements.txt
-```
+- **Heatmap overlay** — red highlights on areas that changed
+- **Binary change mask** — precise pixel-level change map
+- **Change probability map** — model confidence per pixel (0.0–1.0)
+- **Change percentage** — quantified area changed
 
-Python 3.9+ recommended. CUDA optional but speeds up training 10x.
-
----
-
-## Step 2 — Download the Dataset
-
-Go to: **https://justchenhao.github.io/LEVIR/**
-
-1. Download **LEVIR-CD Dataset** (the 256×256 patch version is easiest)
-2. Unzip and place files so the structure matches:
-
-```
-data/raw/
-    train/A/    train/B/    train/label/
-    val/A/      val/B/      val/label/
-    test/A/     test/B/     test/label/
-```
-
-The images are RGB `.png` files. Labels are grayscale `.png` where **white = change, black = no change**.
-
-> **Tip**: If LEVIR is unavailable, the **WHU-CD** dataset has identical structure.
-> Download from: https://study.rsgis.whu.edu.cn/pages/download/
+Real-world use cases include monitoring deforestation, tracking urban expansion, detecting flood or disaster damage, and measuring construction growth.
 
 ---
 
-## Step 3 — Train the Model
+## Demo
 
-```bash
-cd satellite-change-detector
+| Before | After | Detected Changes |
+|--------|-------|-----------------|
+| ![before](assets/before.png) | ![after](assets/after.png) | ![result](assets/heatmap.png) |
 
-# Default training (40 epochs, ResNet-34, 256px, batch 8)
-python src/train.py
-
-# Custom options
-python src/train.py \
-    --epochs 50 \
-    --batch_size 16 \
-    --lr 1e-4 \
-    --encoder resnet34 \
-    --img_size 256
-
-# If you have a GPU (highly recommended)
-# PyTorch auto-detects CUDA — no flag needed
-```
-
-### Training output
-- `models/best_model.pth` — saved whenever val IoU improves
-- `models/last_model.pth` — always saved at the end
-- `models/history.json`   — loss + metrics per epoch
-
-### Expected results on LEVIR-CD
-| Metric | Expected after 40 epochs |
-|--------|--------------------------|
-| IoU    | ~0.78 – 0.83             |
-| F1     | ~0.87 – 0.91             |
-
-Training time: ~25 min on a single GPU (T4/V100), ~3–4 hrs on CPU.
-
-> **Free GPU options**: Google Colab (T4), Kaggle Notebooks (P100), vast.ai (~$0.20/hr)
-
----
-
-## Step 4 — Run the App
-
-```bash
-streamlit run app/app.py
-```
-
-Opens at `http://localhost:8501`
-
-1. Upload a **Before** satellite image
-2. Upload the matching **After** image
-3. Click **DETECT CHANGES**
-4. See the heatmap overlay, binary mask, probability map, and change %
-
----
-
-## Step 5 — Deploy to Hugging Face Spaces (Free)
-
-1. Create a free account at https://huggingface.co
-2. Create a new **Space** → choose **Streamlit**
-3. Upload all files + `models/best_model.pth`
-4. Add a `README.md` with `sdk: streamlit` in the YAML header
-
-Your app will be live at `https://huggingface.co/spaces/YOUR_NAME/satellite-change-detector`
+*Example: Entire residential neighborhood constructed between image captures. Model correctly identifies new building footprints across the scene.*
 
 ---
 
@@ -136,17 +38,105 @@ Your app will be live at `https://huggingface.co/spaces/YOUR_NAME/satellite-chan
 
 ```
 Before image (3ch) ──┐
-                      ├─► Concatenate (6ch) ──► Shared ResNet-34 Encoder
-After  image (3ch) ──┘                                    │
-                                                    U-Net Decoder
-                                                          │
-                                               1-channel sigmoid output
-                                                 (change probability map)
+                      ├──► Concatenate (6ch) ──► ResNet-34 Encoder (pretrained ImageNet)
+After  image (3ch) ──┘              │                        │
+                                    │              5 feature scales extracted
+                                    │                        │
+                                    └──────► U-Net Decoder (skip connections)
+                                                             │
+                                              1-channel sigmoid output
+                                              (per-pixel change probability)
 ```
 
-**Loss**: 0.5 × BCEWithLogits + 0.5 × Dice  
-**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4)  
-**Scheduler**: Cosine Annealing  
+**Why this architecture?**
+- **Siamese design** — both images processed with shared weights, so the model learns to compare rather than memorize
+- **Pretrained ResNet-34 encoder** — transfer learning from 1.2M ImageNet images means the model understands visual structure from day one
+- **U-Net decoder** — skip connections preserve fine spatial detail lost during encoding, critical for pixel-precise masks
+
+---
+
+## Training Results
+
+Trained on **[LEVIR-CD](https://justchenhao.github.io/LEVIR/)** — 637 high-resolution (1024×1024, 0.5m/pixel) Google Earth image pairs spanning 5–14 years of urban change.
+
+| Metric | Score |
+|--------|-------|
+| **IoU (Jaccard)** | 0.68 |
+| **F1 Score** | 0.79 |
+| **Val Loss** | 0.37 |
+
+**Training config:**
+- Encoder: ResNet-34 (ImageNet pretrained)
+- Loss: 0.5 × BCE + 0.5 × Dice
+- Optimizer: AdamW (lr=1e-4, weight_decay=1e-4)
+- Scheduler: Cosine Annealing
+- Epochs: 100 · Batch size: 8 · Image size: 256×256
+- Hardware: RTX 5070 Ti (~20 min training)
+
+---
+
+## Run Locally
+
+**1. Clone and install:**
+```bash
+git clone https://github.com/HirbodJB/satellite-change-detector
+cd satellite-change-detector
+
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # Mac/Linux
+
+pip install -r requirements.txt
+```
+
+**2. Download the dataset:**
+
+Go to [LEVIR-CD](https://justchenhao.github.io/LEVIR/) → Google Drive → download `train.zip`, `val.zip`, `test.zip`
+
+Unzip into:
+```
+data/raw/
+    train/A/    train/B/    train/label/
+    val/A/      val/B/      val/label/
+    test/A/     test/B/     test/label/
+```
+
+**3. Train:**
+```bash
+python src/train.py --epochs 100 --lr 1e-4 --img_size 256 --batch_size 8 --encoder resnet34
+```
+Saves `models/best_model.pth` whenever validation IoU improves.
+
+**4. Run the app:**
+```bash
+streamlit run app/app.py
+```
+Opens at `http://localhost:8501`
+
+---
+
+## Project Structure
+
+```
+satellite-change-detector/
+├── src/
+│   ├── dataset.py       ← LEVIR-CD dataloader + augmentations
+│   ├── model.py         ← Siamese U-Net + DiceBCE loss
+│   ├── metrics.py       ← IoU, F1, Precision, Recall
+│   ├── train.py         ← Training loop with checkpointing
+│   └── inference.py     ← Predictor class used by the app
+├── app/
+│   └── app.py           ← Streamlit UI
+├── data/raw/            ← Dataset goes here (not tracked by git)
+├── models/              ← Saved checkpoints (not tracked by git)
+└── requirements.txt
+```
+
+---
+
+## Stack
+
+`PyTorch` · `segmentation-models-pytorch` · `OpenCV` · `Albumentations` · `Streamlit` · `Hugging Face Spaces`
 
 ---
 
@@ -154,9 +144,13 @@ After  image (3ch) ──┘                                    │
 
 | Problem | Fix |
 |---------|-----|
-| `CUDA out of memory` | Reduce `--batch_size` to 4 or lower `--img_size` to 128 |
-| `FileNotFoundError: data/raw/train/A` | Check your dataset folder structure matches the layout above |
-| App shows "Model not found" | Train first, or set the correct path in the sidebar |
-| Low IoU after training | Try `--lr 3e-4` and `--epochs 60`; also check mask values are 0/255 |
+| `CUDA out of memory` | Reduce `--batch_size` to 4 |
+| `ModuleNotFoundError` | Make sure venv is activated and `pip install -r requirements.txt` was run |
+| App shows "Model not found" | Check model path in sidebar matches where `best_model.pth` is saved |
+| Low IoU | Try `--lr 3e-4` and `--epochs 80`; verify mask pixel values are 0/255 |
 
 ---
+
+## License
+
+MIT
