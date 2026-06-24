@@ -41,48 +41,56 @@ def get_val_transforms(img_size=256):
 
 class LEVIRDataset(Dataset):
     """
-    Expects the LEVIR-CD folder layout:
-        data/raw/
-            train/
-                A/          <- before images  (*.png)
-                B/          <- after  images  (*.png)
-                label/      <- change masks   (*.png, binary 0/255)
-            val/
-                A/ B/ label/
-            test/
-                A/ B/ label/
+    Loads LEVIR-CD and optionally LEVIR-CD+ combined.
+    
+    LEVIR-CD layout:   data/raw/train/A, B, label
+    LEVIR-CD+ layout:  data/raw/levir_plus/train/A, B, label
     """
 
     def __init__(self, root_dir: str, split: str = "train", img_size: int = 256):
-        self.split_dir = os.path.join(root_dir, split)
         self.img_size  = img_size
         self.transform = get_train_transforms(img_size) if split == "train" \
                          else get_val_transforms(img_size)
 
-        self.filenames = sorted(os.listdir(os.path.join(self.split_dir, "A")))
+        # Primary dataset (LEVIR-CD)
+        primary_dir = os.path.join(root_dir, split)
+        filenames_primary = [
+            (os.path.join(primary_dir, "A", f),
+             os.path.join(primary_dir, "B", f),
+             os.path.join(primary_dir, "label", f))
+            for f in sorted(os.listdir(os.path.join(primary_dir, "A")))
+        ]
+
+        # LEVIR-CD+ (only train and test splits exist)
+        plus_split  = "train" if split == "train" else "test"
+        plus_dir    = os.path.join(root_dir, "..", "levir_plus", plus_split)
+        filenames_plus = []
+        if os.path.exists(plus_dir):
+            filenames_plus = [
+                (os.path.join(plus_dir, "A", f),
+                 os.path.join(plus_dir, "B", f),
+                 os.path.join(plus_dir, "label", f))
+                for f in sorted(os.listdir(os.path.join(plus_dir, "A")))
+            ]
+
+        self.filenames = filenames_primary + filenames_plus
+        print(f"  [{split}] LEVIR-CD: {len(filenames_primary)} | LEVIR-CD+: {len(filenames_plus)} | Total: {len(self.filenames)}")
 
     def __len__(self):
         return len(self.filenames)
 
     def __getitem__(self, idx):
-        fname = self.filenames[idx]
+        path_a, path_b, path_label = self.filenames[idx]
 
-        img_a = cv2.cvtColor(
-            cv2.imread(os.path.join(self.split_dir, "A", fname)), cv2.COLOR_BGR2RGB
-        )
-        img_b = cv2.cvtColor(
-            cv2.imread(os.path.join(self.split_dir, "B", fname)), cv2.COLOR_BGR2RGB
-        )
-        mask = cv2.imread(
-            os.path.join(self.split_dir, "label", fname), cv2.IMREAD_GRAYSCALE
-        )
+        img_a = cv2.cvtColor(cv2.imread(path_a), cv2.COLOR_BGR2RGB)
+        img_b = cv2.cvtColor(cv2.imread(path_b), cv2.COLOR_BGR2RGB)
+        mask  = cv2.imread(path_label, cv2.IMREAD_GRAYSCALE)
 
-        # Binarize mask (LEVIR uses 255 for change, 0 for no-change)
         mask = (mask > 128).astype(np.float32)
 
         transformed = self.transform(image=img_a, image2=img_b, mask=mask)
         img_a_t = transformed["image"]
         img_b_t = transformed["image2"]
-        mask_t  = transformed["mask"].unsqueeze(0)   # (1, H, W)
+        mask_t  = transformed["mask"].unsqueeze(0)
 
         return img_a_t, img_b_t, mask_t
