@@ -21,15 +21,19 @@ class SiameseUNet(nn.Module):
     def __init__(self, encoder_name: str = "resnet34", pretrained: bool = True):
         super().__init__()
 
+        # Keep the encoder initialization flexible so experiments can swap the
+        # backbone or disable ImageNet weights without changing the forward pass.
         weights = "imagenet" if pretrained else None
 
-        # We build ONE U-Net; the encoder is used twice (shared weights)
+        # The two input images are concatenated channel-wise and processed by a
+        # single U-Net. This preserves shared feature extraction while keeping
+        # the implementation simple.
         self.unet = smp.Unet(
             encoder_name=encoder_name,
             encoder_weights=weights,
             in_channels=6,          # concatenate both images channel-wise → 3+3=6
             classes=1,
-            activation=None,        # raw logits; BCEWithLogitsLoss handles sigmoid
+            activation=None,        # return raw logits for numerically stable loss
         )
 
     def forward(self, img_a: torch.Tensor, img_b: torch.Tensor) -> torch.Tensor:
@@ -40,6 +44,8 @@ class SiameseUNet(nn.Module):
         Returns:
             logits: (B, 1, H, W)
         """
+        # Concatenate the pair along the channel axis so the backbone sees both
+        # images at once and can learn the change signal directly.
         x = torch.cat([img_a, img_b], dim=1)   # (B, 6, H, W)
         return self.unet(x)
 
@@ -53,13 +59,18 @@ class DiceBCELoss(nn.Module):
 
     def __init__(self, bce_weight: float = 0.5):
         super().__init__()
+        # BCE handles pixel-wise supervision, while Dice improves overlap quality
+        # on sparse change masks. The weight lets training emphasize either term.
         self.bce_weight  = bce_weight
         self.dice_weight = 1.0 - bce_weight
         self.bce = nn.BCEWithLogitsLoss()
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # BCE is computed directly on logits to avoid applying sigmoid twice.
         bce_loss  = self.bce(logits, targets)
 
+        # Dice is computed on probabilities, using a small smoothing constant to
+        # keep the ratio stable when masks are empty or nearly empty.
         probs     = torch.sigmoid(logits)
         smooth    = 1e-6
         inter     = (probs * targets).sum(dim=(2, 3))
