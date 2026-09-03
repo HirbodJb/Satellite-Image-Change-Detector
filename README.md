@@ -36,14 +36,21 @@ Real-world applications include monitoring deforestation, tracking urban expansi
 
 ## Results
 
-Trained on **[LEVIR-CD](https://justchenhao.github.io/LEVIR/)** and **[LEVIR-CD+](https://github.com/S2Looking/Dataset)** high-resolution (1024×1024, 0.5m/pixel) Google Earth image pairs. A deterministic 10% of LEVIR-CD+ training data is held out for validation, and its official test split is never used for model selection.
+The latest training run uses **[LEVIR-CD](https://justchenhao.github.io/LEVIR/)** and **[LEVIR-CD+](https://github.com/S2Looking/Dataset)** high-resolution (1024×1024, 0.5m/pixel) Google Earth image pairs. A deterministic 10% of LEVIR-CD+ training data is held out for validation using seed `42`. This run keeps the official test splits separate from training and model selection.
 
 | Metric | Score |
 |--------|-------|
-| **Current baseline validation IoU** | **0.7829** |
-| **Current baseline validation F1** | **0.8783** |
+| **Validation IoU (Jaccard)** | **0.8166** |
+| **Validation F1** | **0.8991** |
+| **Validation Precision** | **0.8879** |
+| **Validation Recall** | **0.9105** |
+| **Best Epoch** | **91 of 100** |
 | **Training Pairs** | 1,018 (445 LEVIR-CD + 573 LEVIR-CD+) |
 | **Validation Pairs** | 128 (64 LEVIR-CD + 64 held-out LEVIR-CD+) |
+
+**Evaluation protocol:** one deterministic 256×256 center crop per validation pair, a probability threshold of `0.5`, and no test-time augmentation (TTA). IoU, F1, precision, and recall are calculated from globally accumulated true-positive, false-positive, and false-negative pixel counts across all 128 pairs.
+
+These are **validation scores**, not held-out test-set scores or full-image tiled-inference scores. The app uses overlapping tiles and TTA, so its full-image predictions use a different inference protocol. The values above come from the saved epoch-91 checkpoint metadata; epoch 100 was not the best checkpoint.
 
 ---
 
@@ -60,6 +67,7 @@ After  image (3ch) ──► Shared ResNet-34 encoder ──► feature maps ─
 ```
 
 **Design decisions:**
+
 - **True Siamese design** — both dates pass separately through one shared encoder, and the decoder receives their absolute feature differences
 - **Pretrained ResNet-34 encoder** — transfer learning from 1.2M ImageNet photos means strong visual understanding from epoch 1
 - **U-Net decoder with skip connections** — preserves fine spatial detail that gets lost during encoding, critical for pixel-precise masks
@@ -69,13 +77,15 @@ After  image (3ch) ──► Shared ResNet-34 encoder ──► feature maps ─
 - **Tiled inference** — overlapping native-resolution tiles are blended instead of shrinking the entire uploaded scene
 
 **Training config:**
+
 - Encoder: ResNet-34 (ImageNet pretrained)
 - Fusion: shared-encoder absolute feature difference (`siamese_diff`)
 - Loss: Focal + Dice (`focal_dice`)
 - Optimizer: AdamW (lr=1e-4, weight_decay=1e-4)
 - Scheduler: Cosine Annealing
 - Epochs: 100 · Batch size: 8 · Image size: 256×256
-- Hardware: RTX 5070 Ti (~25 min)
+- Seed: 42 · LEVIR-CD+ validation holdout: 10%
+- Hardware: RTX 5070 Ti (training time varies with configuration)
 
 ---
 
