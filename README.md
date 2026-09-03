@@ -36,41 +36,42 @@ Real-world applications include monitoring deforestation, tracking urban expansi
 
 ## Results
 
-Trained on a combined dataset of **[LEVIR-CD](https://justchenhao.github.io/LEVIR/)** and **[LEVIR-CD+](https://github.com/S2Looking/Dataset)** — 1,083 high-resolution (1024×1024, 0.5m/pixel) Google Earth image pairs spanning 5–18 years of urban change across Texas.
+Trained on **[LEVIR-CD](https://justchenhao.github.io/LEVIR/)** and **[LEVIR-CD+](https://github.com/S2Looking/Dataset)** high-resolution (1024×1024, 0.5m/pixel) Google Earth image pairs. A deterministic 10% of LEVIR-CD+ training data is held out for validation, and its official test split is never used for model selection.
 
 | Metric | Score |
 |--------|-------|
-| **IoU (Jaccard Index)** | **0.6959** |
-| **F1 Score** | **0.7902** |
-| **Training Pairs** | 1,083 (LEVIR-CD + LEVIR-CD+) |
-| **Test Set** | LEVIR-CD official test split (128 pairs) |
+| **Current baseline validation IoU** | **0.7829** |
+| **Current baseline validation F1** | **0.8783** |
+| **Training Pairs** | 1,018 (445 LEVIR-CD + 573 LEVIR-CD+) |
+| **Validation Pairs** | 128 (64 LEVIR-CD + 64 held-out LEVIR-CD+) |
 
 ---
 
 ## Architecture
 
 ```
-Before image (3ch) ──┐
-                      ├──► Concatenate (6ch) ──► ResNet-34 Encoder (pretrained ImageNet)
-After  image (3ch) ──┘                                      │
-                                               5 feature scales extracted
-                                                             │
-                                          U-Net Decoder (skip connections)
-                                                             │
-                                          1-channel sigmoid output
-                                          (per-pixel change probability)
+Before image (3ch) ──► Shared ResNet-34 encoder ──► feature maps ──┐
+                                                                  ├─► absolute differences
+After  image (3ch) ──► Shared ResNet-34 encoder ──► feature maps ──┘          │
+                                                                               ▼
+                                                                    U-Net decoder
+                                                                               │
+                                                                    1-channel logits
 ```
 
 **Design decisions:**
-- **Siamese design** — both images share the same encoder weights, so the model learns to compare rather than memorize individual scenes
+- **True Siamese design** — both dates pass separately through one shared encoder, and the decoder receives their absolute feature differences
 - **Pretrained ResNet-34 encoder** — transfer learning from 1.2M ImageNet photos means strong visual understanding from epoch 1
 - **U-Net decoder with skip connections** — preserves fine spatial detail that gets lost during encoding, critical for pixel-precise masks
-- **BCE + Dice loss** — BCE handles per-pixel accuracy while Dice handles the class imbalance problem (most pixels don't change)
+- **Focal + Dice loss** — focal loss emphasizes difficult pixels while Dice handles sparse change regions
+- **Change-aware crops** — 70% of eligible training crops are guaranteed to contain real change pixels while random negatives are retained
 - **Test Time Augmentation (TTA)** — at inference, predictions are averaged across 4 flipped versions of each image pair for more robust results
+- **Tiled inference** — overlapping native-resolution tiles are blended instead of shrinking the entire uploaded scene
 
 **Training config:**
 - Encoder: ResNet-34 (ImageNet pretrained)
-- Loss: 0.5 × BCEWithLogits + 0.5 × Dice
+- Fusion: shared-encoder absolute feature difference (`siamese_diff`)
+- Loss: Focal + Dice (`focal_dice`)
 - Optimizer: AdamW (lr=1e-4, weight_decay=1e-4)
 - Scheduler: Cosine Annealing
 - Epochs: 100 · Batch size: 8 · Image size: 256×256
@@ -112,7 +113,7 @@ data/raw/levir_plus/LEVIR-CD+/
 
 **3. Train:**
 ```bash
-python src/train.py --epochs 100 --lr 1e-4 --img_size 256 --batch_size 8 --encoder resnet34
+python src/train.py --epochs 100 --lr 1e-4 --img_size 256 --batch_size 8 --encoder resnet34 --fusion_mode siamese_diff --loss focal_dice
 ```
 
 **4. Run the app:**
@@ -130,10 +131,10 @@ Opens at `http://localhost:8501` — upload a before and after image, hit Detect
 satellite-change-detector/
 ├── src/
 │   ├── dataset.py       ← LEVIR-CD + LEVIR-CD+ dataloader + augmentations
-│   ├── model.py         ← Siamese U-Net + DiceBCE loss
-│   ├── metrics.py       ← IoU, F1, Precision, Recall
-│   ├── train.py         ← Training loop with checkpointing
-│   └── inference.py     ← Predictor class with TTA support
+│   ├── model.py         ← Early-fusion/Siamese U-Nets + selectable losses
+│   ├── metrics.py       ← Globally aggregated IoU, F1, Precision, Recall
+│   ├── train.py         ← Reproducible training + cross-run best checkpointing
+│   └── inference.py     ← Native-resolution tiled prediction + TTA
 ├── app/
 │   └── app.py           ← Streamlit UI
 ├── assets/              ← README screenshots

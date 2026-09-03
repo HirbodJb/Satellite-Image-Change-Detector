@@ -34,6 +34,13 @@ import matplotlib.colors as mcolors  # noqa: F401 (available for future palette 
 from inference import ChangeDetector
 
 
+@st.cache_resource(show_spinner=False)
+def load_detector(checkpoint_path, checkpoint_modified_time):
+    """Load a checkpoint once and refresh the cache when the file changes."""
+    del checkpoint_modified_time
+    return ChangeDetector(checkpoint_path)
+
+
 # ---------------------------------------------------------------------------
 # Page configuration
 # Must be the first Streamlit call in the script.
@@ -210,8 +217,7 @@ if run_btn:
     else:
         # ── Run inference ────────────────────────────────────────────────────
         with st.spinner("Running inference..."):
-            # Load model onto CPU (HF Spaces free tier has no GPU)
-            detector = ChangeDetector(model_path, device="cpu")
+            detector = load_detector(model_path, os.path.getmtime(model_path))
 
             before_pil = Image.open(before_file)
             after_pil  = Image.open(after_file)
@@ -223,6 +229,13 @@ if run_btn:
                 after_pil,
                 threshold=threshold,
                 img_size=img_size,
+            )
+
+        if result["after_was_resized"]:
+            st.warning(
+                "The uploaded images had different dimensions, so the After "
+                "image was resized to match the Before image. For the most "
+                "accurate result, upload already aligned images."
             )
 
         st.markdown("---")

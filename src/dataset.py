@@ -1,220 +1,230 @@
-"""
-src/dataset.py
-==============
-Dataset loading and preprocessing pipeline for satellite change detection.
-
-Supports two datasets with identical folder structures:
-  - LEVIR-CD  : 637 image pairs, primary benchmark dataset
-  - LEVIR-CD+ : 985 image pairs, extended version with more regions and years
-
-Both datasets contain 1024×1024 RGB Google Earth image pairs at 0.5m/pixel
-resolution, with binary grayscale labels where white (255) = changed and
-black (0) = no change.
-
-Expected directory layout:
-    data/raw/
-        train/  A/  B/  label/      ← LEVIR-CD training split
-        val/    A/  B/  label/      ← LEVIR-CD validation split
-        test/   A/  B/  label/      ← LEVIR-CD test split
-        levir_plus/
-            LEVIR-CD+/
-                train/  A/  B/  label/   ← LEVIR-CD+ training split
-                test/   A/  B/  label/   ← LEVIR-CD+ test split
-
-Note: LEVIR-CD+ has no val split, so it is merged with train during training
-and with test during evaluation.
-"""
+"""Dataset loading and preprocessing for LEVIR-CD and LEVIR-CD+."""
 
 import os
+
+import albumentations as A
 import cv2
 import numpy as np
-from torch.utils.data import Dataset
-import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from torch.utils.data import Dataset
 
 
-# ---------------------------------------------------------------------------
-# Augmentation pipelines
-#
-# Both pipelines use `additional_targets={"image2": "image"}` so that the
-# before (image) and after (image2) photos receive the SAME spatial transform
-# — keeping them geometrically aligned. Color jitter is applied independently
-# to simulate sensor/lighting variation between capture dates.
-# ---------------------------------------------------------------------------
+def _list_triplets(split_dir):
+    """Return matched (before, after, label) paths and reject broken pairs."""
+    if not os.path.isdir(split_dir):
+        return []
 
-def get_train_transforms(img_size: int = 256) -> A.Compose:
-    """
-    Augmentation pipeline used during training.
-
-    Applies spatial transforms (crops, flips, rotations) identically to both
-    images and the mask to preserve alignment, plus mild color jitter on the
-    images only to simulate real-world lighting and seasonal variation.
-
-    Args:
-        img_size: Output crop size in pixels (default 256 to match LEVIR-CD).
-
-    Returns:
-        An Albumentations Compose pipeline.
-    """
-    return A.Compose([
-        # Random crop extracts a 256×256 patch from the 1024×1024 source image,
-        # effectively multiplying dataset size by up to 16×
-        A.RandomCrop(img_size, img_size),
-
-        # Geometric flips — applied identically to image, image2, and mask
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-
-        # Color jitter on images only (mask is unaffected by Albumentations design)
-        # Simulates seasonal color shifts, different sensors, and lighting angles
-        A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, p=0.3),
-
-        # Normalize to ImageNet mean/std — required because the ResNet-34 encoder
-        # was pretrained on ImageNet with these exact statistics
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-
-        # Convert HWC numpy arrays to CHW PyTorch tensors
-        ToTensorV2(),
-
-    ], additional_targets={"image2": "image"})  # apply same spatial ops to both images
+    triplets = []
+    for filename in sorted(os.listdir(os.path.join(split_dir, "A"))):
+        if not filename.lower().endswith(".png"):
+            continue
+        paths = (
+            os.path.join(split_dir, "A", filename),
+            os.path.join(split_dir, "B", filename),
+            os.path.join(split_dir, "label", filename),
+        )
+        missing = [path for path in paths if not os.path.isfile(path)]
+        if missing:
+            raise FileNotFoundError(
+                f"Incomplete image pair for {filename}: missing {missing}"
+            )
+        triplets.append(paths)
+    return triplets
 
 
-def get_val_transforms(img_size: int = 256) -> A.Compose:
-    """
-    Deterministic pipeline used during validation and testing.
-
-    Uses CenterCrop instead of RandomCrop so results are reproducible
-    across evaluation runs. No color jitter or geometric randomness.
-
-    Args:
-        img_size: Output crop size in pixels (default 256).
-
-    Returns:
-        An Albumentations Compose pipeline.
-    """
-    return A.Compose([
-        # Center crop is deterministic — ensures consistent evaluation
-        A.CenterCrop(img_size, img_size),
-
-        # Same ImageNet normalization as training
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-
-        ToTensorV2(),
-
-    ], additional_targets={"image2": "image"})
+def get_train_geometric_transforms():
+    """Spatial augmentations shared by both dates and the change mask."""
+    return A.Compose(
+        [
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+        ],
+        additional_targets={"image2": "image"},
+    )
 
 
-# ---------------------------------------------------------------------------
-# Dataset class
-# ---------------------------------------------------------------------------
+def get_photometric_transforms():
+    """Mild date-specific appearance changes applied independently."""
+    return A.Compose(
+        [
+            A.ColorJitter(
+                brightness=0.15,
+                contrast=0.15,
+                saturation=0.15,
+                hue=0.03,
+                p=0.35,
+            ),
+            A.RandomBrightnessContrast(
+                brightness_limit=0.08,
+                contrast_limit=0.08,
+                p=0.20,
+            ),
+        ]
+    )
+
+
+def get_tensor_transform():
+    """Apply ImageNet normalization and convert arrays to tensors."""
+    return A.Compose(
+        [
+            A.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            ),
+            ToTensorV2(),
+        ],
+        additional_targets={"image2": "image"},
+    )
+
+
+def get_val_transforms(img_size=256):
+    """Deterministic center-crop pipeline used for model selection."""
+    return A.Compose(
+        [
+            A.CenterCrop(img_size, img_size),
+            A.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            ),
+            ToTensorV2(),
+        ],
+        additional_targets={"image2": "image"},
+    )
+
 
 class LEVIRDataset(Dataset):
-    """
-    PyTorch Dataset that loads LEVIR-CD and optionally LEVIR-CD+ image pairs.
+    """Load aligned before/after image pairs and their binary change masks.
 
-    Each sample consists of:
-        img_a  : before image tensor  (3, H, W) — normalized float32
-        img_b  : after  image tensor  (3, H, W) — normalized float32
-        mask   : change mask tensor   (1, H, W) — binary float32 (0.0 or 1.0)
-
-    The two datasets are concatenated at the filename level before any loading
-    occurs, so DataLoader workers see a single flat list of (A, B, label) paths.
-
-    If the LEVIR-CD+ directory does not exist, the dataset silently falls back
-    to LEVIR-CD only — no code changes required.
+    LEVIR-CD+ has no validation directory. A deterministic portion of its
+    training set is therefore reserved for validation; its official test set is
+    used only when ``split="test"``.
     """
 
-    def __init__(self, root_dir: str, split: str = "train", img_size: int = 256):
-        """
-        Args:
-            root_dir : Path to the data/raw/ directory.
-            split    : One of "train", "val", or "test".
-            img_size : Spatial resolution passed to the transform pipelines.
-        """
+    def __init__(
+        self,
+        root_dir,
+        split="train",
+        img_size=256,
+        positive_crop_probability=0.70,
+        plus_val_fraction=0.10,
+        split_seed=42,
+        include_plus=True,
+    ):
+        if split not in {"train", "val", "test"}:
+            raise ValueError("split must be 'train', 'val', or 'test'")
+        if not 0.0 <= positive_crop_probability <= 1.0:
+            raise ValueError("positive_crop_probability must be between 0 and 1")
+        if not 0.0 <= plus_val_fraction < 1.0:
+            raise ValueError("plus_val_fraction must be in [0, 1)")
+
+        self.split = split
         self.img_size = img_size
+        self.positive_crop_probability = positive_crop_probability
 
-        # Select augmentation pipeline based on split
-        # Val and test use the deterministic center-crop pipeline
-        self.transform = (
-            get_train_transforms(img_size) if split == "train"
-            else get_val_transforms(img_size)
-        )
-
-        # ── Primary dataset: LEVIR-CD ────────────────────────────────────────
-        primary_dir = os.path.join(root_dir, split)
-        filenames_primary = [
-            (
-                os.path.join(primary_dir, "A", f),      # before image path
-                os.path.join(primary_dir, "B", f),      # after  image path
-                os.path.join(primary_dir, "label", f),  # change mask path
-            )
-            for f in sorted(os.listdir(os.path.join(primary_dir, "A")))
-            if f.endswith('.png')  # filter out .DS_Store and other non-image files
-        ]
-
-        # ── Secondary dataset: LEVIR-CD+ ────────────────────────────────────
-        # LEVIR-CD+ only has "train" and "test" splits (no "val"),
-        # so we map val → test to avoid an empty directory error.
-        plus_split = "train" if split == "train" else "test"
-        plus_dir   = os.path.join(root_dir, "levir_plus", "LEVIR-CD+", plus_split)
-
+        filenames_primary = _list_triplets(os.path.join(root_dir, split))
         filenames_plus = []
-        if os.path.exists(plus_dir):
-            # Only loaded if the LEVIR-CD+ directory is present on disk
-            filenames_plus = [
-                (
-                    os.path.join(plus_dir, "A", f),
-                    os.path.join(plus_dir, "B", f),
-                    os.path.join(plus_dir, "label", f),
-                )
-                for f in sorted(os.listdir(os.path.join(plus_dir, "A")))
-                if f.endswith('.png')
-            ]
 
-        # Combine both datasets into a single flat list of file path tuples
+        plus_root = os.path.join(root_dir, "levir_plus", "LEVIR-CD+")
+        if include_plus and os.path.isdir(plus_root):
+            if split == "test":
+                filenames_plus = _list_triplets(os.path.join(plus_root, "test"))
+            else:
+                plus_train = _list_triplets(os.path.join(plus_root, "train"))
+                rng = np.random.default_rng(split_seed)
+                order = rng.permutation(len(plus_train))
+                val_count = int(round(len(plus_train) * plus_val_fraction))
+                val_indices = set(order[:val_count].tolist())
+                if split == "val":
+                    filenames_plus = [
+                        item for index, item in enumerate(plus_train)
+                        if index in val_indices
+                    ]
+                else:
+                    filenames_plus = [
+                        item for index, item in enumerate(plus_train)
+                        if index not in val_indices
+                    ]
+
         self.filenames = filenames_primary + filenames_plus
+        self.geometric_transform = get_train_geometric_transforms()
+        self.photometric_transform = get_photometric_transforms()
+        self.tensor_transform = get_tensor_transform()
+        self.val_transform = get_val_transforms(img_size)
 
         print(
             f"  [{split}] LEVIR-CD: {len(filenames_primary)} | "
-            f"LEVIR-CD+: {len(filenames_plus)} | "
-            f"Total: {len(self.filenames)}"
+            f"LEVIR-CD+: {len(filenames_plus)} | Total: {len(self.filenames)}"
         )
 
-    def __len__(self) -> int:
-        """Returns total number of image pairs across both datasets."""
+    def __len__(self):
         return len(self.filenames)
 
-    def __getitem__(self, idx: int):
-        """
-        Load, decode, and transform one image pair.
+    def _change_aware_crop(self, img_a, img_b, mask):
+        """Crop around change pixels most of the time, while retaining negatives."""
+        crop = self.img_size
+        height, width = mask.shape
+        if height < crop or width < crop:
+            pad_bottom = max(0, crop - height)
+            pad_right = max(0, crop - width)
+            border = (0, pad_bottom, 0, pad_right)
+            img_a = cv2.copyMakeBorder(img_a, *border, cv2.BORDER_REFLECT_101)
+            img_b = cv2.copyMakeBorder(img_b, *border, cv2.BORDER_REFLECT_101)
+            mask = cv2.copyMakeBorder(mask, *border, cv2.BORDER_CONSTANT, value=0)
+            height, width = mask.shape
 
-        Args:
-            idx: Index into the combined filename list.
+        changed_y, changed_x = np.where(mask > 0)
+        use_positive = (
+            changed_y.size > 0
+            and np.random.random() < self.positive_crop_probability
+        )
 
-        Returns:
-            img_a_t : Before image tensor (3, H, W)
-            img_b_t : After  image tensor (3, H, W)
-            mask_t  : Change mask tensor  (1, H, W) — values 0.0 or 1.0
-        """
+        if use_positive:
+            chosen = np.random.randint(changed_y.size)
+            pixel_y, pixel_x = int(changed_y[chosen]), int(changed_x[chosen])
+            y_min = max(0, pixel_y - crop + 1)
+            y_max = min(pixel_y, height - crop)
+            x_min = max(0, pixel_x - crop + 1)
+            x_max = min(pixel_x, width - crop)
+            top = np.random.randint(y_min, y_max + 1)
+            left = np.random.randint(x_min, x_max + 1)
+        else:
+            top = np.random.randint(0, height - crop + 1)
+            left = np.random.randint(0, width - crop + 1)
+
+        crop_slice = np.s_[top:top + crop, left:left + crop]
+        return img_a[crop_slice], img_b[crop_slice], mask[crop_slice]
+
+    def __getitem__(self, idx):
         path_a, path_b, path_label = self.filenames[idx]
+        raw_a = cv2.imread(path_a, cv2.IMREAD_COLOR)
+        raw_b = cv2.imread(path_b, cv2.IMREAD_COLOR)
+        raw_mask = cv2.imread(path_label, cv2.IMREAD_GRAYSCALE)
+        if raw_a is None or raw_b is None or raw_mask is None:
+            raise ValueError(f"Could not decode dataset sample: {self.filenames[idx]}")
 
-        # Load images as RGB (OpenCV reads BGR by default, so we convert)
-        img_a = cv2.cvtColor(cv2.imread(path_a), cv2.COLOR_BGR2RGB)
-        img_b = cv2.cvtColor(cv2.imread(path_b), cv2.COLOR_BGR2RGB)
+        img_a = cv2.cvtColor(raw_a, cv2.COLOR_BGR2RGB)
+        img_b = cv2.cvtColor(raw_b, cv2.COLOR_BGR2RGB)
+        mask = (raw_mask > 128).astype(np.float32)
 
-        # Load mask as single-channel grayscale
-        mask = cv2.imread(path_label, cv2.IMREAD_GRAYSCALE)
+        if img_a.shape != img_b.shape or img_a.shape[:2] != mask.shape:
+            raise ValueError(f"Unaligned sample dimensions: {self.filenames[idx]}")
 
-        # Binarize: LEVIR labels use 255 for change, 0 for no-change.
-        # Convert to float32 so BCEWithLogitsLoss can consume it directly.
-        mask = (mask > 128).astype(np.float32)
+        if self.split == "train":
+            img_a, img_b, mask = self._change_aware_crop(img_a, img_b, mask)
+            transformed = self.geometric_transform(
+                image=img_a, image2=img_b, mask=mask
+            )
+            img_a = self.photometric_transform(image=transformed["image"])["image"]
+            img_b = self.photometric_transform(image=transformed["image2"])["image"]
+            transformed = self.tensor_transform(
+                image=img_a, image2=img_b, mask=transformed["mask"]
+            )
+        else:
+            transformed = self.val_transform(image=img_a, image2=img_b, mask=mask)
 
-        # Apply the same spatial transform to both images and the mask.
-        # Color transforms only affect the images, not the mask.
-        transformed = self.transform(image=img_a, image2=img_b, mask=mask)
-        img_a_t = transformed["image"]   # (3, H, W) float32 tensor
-        img_b_t = transformed["image2"]  # (3, H, W) float32 tensor
-        mask_t  = transformed["mask"].unsqueeze(0)  # (1, H, W) — add channel dim
-
-        return img_a_t, img_b_t, mask_t
+        return (
+            transformed["image"],
+            transformed["image2"],
+            transformed["mask"].unsqueeze(0),
+        )

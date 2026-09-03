@@ -52,3 +52,28 @@ def change_percentage(logits, threshold=0.5):
     """Return the percentage of pixels predicted as changed."""
     preds = _to_binary(logits, threshold)
     return (preds.sum() / preds.numel() * 100).item()
+
+
+def confusion_counts(logits, targets, threshold=0.5):
+    """Return global TP, FP, FN, and TN counts for one batch."""
+    preds = _to_binary(logits, threshold).bool()
+    targets = targets.bool()
+    true_positive = (preds & targets).sum().item()
+    false_positive = (preds & ~targets).sum().item()
+    false_negative = (~preds & targets).sum().item()
+    true_negative = (~preds & ~targets).sum().item()
+    return true_positive, false_positive, false_negative, true_negative
+
+
+def scores_from_counts(tp, fp, fn, smooth=1e-6):
+    """Calculate globally aggregated IoU, F1, precision, and recall."""
+    iou = (tp + smooth) / (tp + fp + fn + smooth)
+    f1 = (2 * tp + smooth) / (2 * tp + fp + fn + smooth)
+    precision = (tp + smooth) / (tp + fp + smooth)
+    recall = (tp + smooth) / (tp + fn + smooth)
+    return {
+        "iou": float(iou),
+        "f1": float(f1),
+        "precision": float(precision),
+        "recall": float(recall),
+    }
