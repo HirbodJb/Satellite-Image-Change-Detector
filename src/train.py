@@ -9,6 +9,7 @@ Usage:
 
 import os
 import argparse
+import json
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -17,6 +18,60 @@ from tqdm import tqdm
 from dataset import LEVIRDataset
 from model   import SiameseUNet, DiceBCELoss
 from metrics import iou_score, f1_score
+
+
+def load_existing_best(save_dir):
+    """Return the best IoU already stored in save_dir, if one exists.
+
+    New runs write a small metadata file next to the checkpoint. For checkpoints
+    created by older versions of this script, history.json is used once to
+    recover the score and bootstrap the metadata file.
+    """
+    checkpoint_path = os.path.join(save_dir, "best_model.pth")
+    metadata_path = os.path.join(save_dir, "best_model_metadata.json")
+    history_path = os.path.join(save_dir, "history.json")
+
+    if not os.path.exists(checkpoint_path):
+        return 0.0, None
+
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+        return float(metadata["val_iou"]), "best_model_metadata.json"
+
+    if os.path.exists(history_path):
+        with open(history_path, "r") as f:
+            previous_history = json.load(f)
+
+        if previous_history:
+            previous_best = max(previous_history, key=lambda row: row["val_iou"])
+            metadata = {
+                "epoch": int(previous_best["epoch"]),
+                "val_iou": float(previous_best["val_iou"]),
+                "val_f1": float(previous_best["val_f1"]),
+                "val_loss": float(previous_best["val_loss"]),
+                "source": "recovered from history.json",
+            }
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+            return metadata["val_iou"], "history.json"
+
+    # The checkpoint is valuable, but there is no trustworthy score with which
+    # to compare it. Refuse to overwrite it until its metric is supplied.
+    return float("inf"), "unscored checkpoint"
+
+
+def save_best_metadata(save_dir, epoch, val_loss, val_iou, val_f1):
+    """Persist the score associated with best_model.pth for future runs."""
+    metadata = {
+        "epoch": epoch,
+        "val_iou": val_iou,
+        "val_f1": val_f1,
+        "val_loss": val_loss,
+        "source": "training validation",
+    }
+    with open(os.path.join(save_dir, "best_model_metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
 
 
 # --------------------------------------------------------------------------- #
@@ -108,8 +163,17 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # ---- Training loop -------------------------------------------------------
-    # Track the best validation IoU so the strongest checkpoint is preserved.
-    best_iou = 0.0
+    # Start from the best score achieved across all earlier runs in this
+    # directory. This prevents a weaker new run from overwriting the checkpoint.
+    best_iou, best_source = load_existing_best(args.save_dir)
+    if best_source == "unscored checkpoint":
+        print(
+            "WARNING: An existing best_model.pth has no saved validation score. "
+            "It will be preserved and not overwritten."
+        )
+    elif best_source:
+        print(f"Preserving existing global best IoU: {best_iou:.4f} ({best_source})")
+
     history  = []
 
     for epoch in range(1, args.epochs + 1):
@@ -133,7 +197,14 @@ def main():
         if val_iou > best_iou:
             best_iou = val_iou
             torch.save(model.state_dict(), os.path.join(args.save_dir, "best_model.pth"))
-            print(f"  ✓ Saved best model (IoU={best_iou:.4f})")
+            save_best_metadata(
+                args.save_dir,
+                epoch=epoch,
+                val_loss=val_loss,
+                val_iou=val_iou,
+                val_f1=val_f1,
+            )
+            print(f"  ✓ Saved new global best model (IoU={best_iou:.4f})")
 
     # Always save final model
     torch.save(model.state_dict(), os.path.join(args.save_dir, "last_model.pth"))
@@ -142,7 +213,6 @@ def main():
     # Save training history
     # Persist the epoch metrics as JSON so downstream scripts can inspect them
     # without needing to rerun training.
-    import json
     with open(os.path.join(args.save_dir, "history.json"), "w") as f:
         json.dump(history, f, indent=2)
 
